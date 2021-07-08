@@ -1,16 +1,14 @@
+import json
 import os
 
-# from flask import Flask, render_template, request, url_for
-from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse
-from fastapi.templating import Jinja2Templates
-import oauth2 as oauth
-import urllib.request
-import urllib.parse
-import urllib.error
-import json
 import uvicorn
 from dotenv import load_dotenv
+# from flask import Flask, render_template, request, url_for
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+# import oauth2 as oauth
+from requests_oauthlib import OAuth1Session
 
 # app = Flask(__name__)
 app = FastAPI()
@@ -42,28 +40,30 @@ def start(request: Request):
     # note that the external callback URL must be added to the whitelist on
     # the developer.twitter.com portal, inside the app settings
     app_callback_url = request.url_for("callback")
+    print(f"callback: {app_callback_url}")
 
     # Generate the OAuth request tokens, then display them
-    consumer = oauth.Consumer(APP_CONSUMER_KEY, APP_CONSUMER_SECRET)
-    client = oauth.Client(consumer)
-    resp, content = client.request(
-        request_token_url,
-        "POST",
-        body=urllib.parse.urlencode({"oauth_callback": app_callback_url}),
-    )
+    # consumer = oauth.Consumer(APP_CONSUMER_KEY, APP_CONSUMER_SECRET)
+    # client = oauth.Client(consumer)
+    # resp, content = client.request(
+    #     request_token_url,
+    #     "POST",
+    #     body=urllib.parse.urlencode({"oauth_callback": app_callback_url}),
+    # )
+    oauth = OAuth1Session(APP_CONSUMER_KEY, client_secret=APP_CONSUMER_SECRET)
+    resp = oauth.fetch_request_token(request_token_url)
 
-    if resp["status"] != "200":
-        error_message = "Invalid response, status {status}, {message}".format(
-            status=resp["status"], message=content.decode("utf-8")
-        )
-        # return render_template("error.html", error_message=error_message)
-        return templates.TemplateResponse(
-            "error.html", {"request": request, "error_message": error_message}
-        )
+    # if resp["status"] != "200":
+    #     error_message = "Invalid response, status {status}, {message}".format(
+    #         status=resp["status"], message=content.decode("utf-8")
+    #     )
+    #     # return render_template("error.html", error_message=error_message)
+    #     return templates.TemplateResponse(
+    #         "error.html", {"request": request, "error_message": error_message}
+    #     )
 
-    request_token = dict(urllib.parse.parse_qsl(content))
-    oauth_token = request_token[b"oauth_token"].decode("utf-8")
-    oauth_token_secret = request_token[b"oauth_token_secret"].decode("utf-8")
+    oauth_token = resp.get("oauth_token")
+    oauth_token_secret = resp.get("oauth_token_secret")
 
     oauth_store[oauth_token] = oauth_token_secret
     return templates.TemplateResponse(
@@ -86,9 +86,6 @@ def callback(
 ):
     # Accept the callback params, get the token and call the API to
     # display the logged-in user's name and handle
-    # oauth_token = request.args.get("oauth_token")
-    # oauth_verifier = request.args.get("oauth_verifier")
-    # oauth_denied = request.args.get("denied")
 
     # if the OAuth request was denied, delete our local token
     # and show an error message
@@ -120,40 +117,44 @@ def callback(
 
     # if we got this far, we have both callback params and we have
     # found this token locally
-
-    consumer = oauth.Consumer(APP_CONSUMER_KEY, APP_CONSUMER_SECRET)
-    token = oauth.Token(oauth_token, oauth_token_secret)
-    token.set_verifier(oauth_verifier)
-    client = oauth.Client(consumer, token)
-
-    resp, content = client.request(access_token_url, "POST")
-    access_token = dict(urllib.parse.parse_qsl(content))
-
-    screen_name = access_token[b"screen_name"].decode("utf-8")
-    user_id = access_token[b"user_id"].decode("utf-8")
-
-    # These are the tokens you would store long term, someplace safe
-    real_oauth_token = access_token[b"oauth_token"].decode("utf-8")
-    real_oauth_token_secret = access_token[b"oauth_token_secret"].decode("utf-8")
-
-    # Call api.twitter.com/1.1/users/show.json?user_id={user_id}
-    real_token = oauth.Token(real_oauth_token, real_oauth_token_secret)
-    real_client = oauth.Client(consumer, real_token)
-    real_resp, real_content = real_client.request(
-        show_user_url + "?user_id=" + user_id, "GET"
+    oauth = OAuth1Session(
+        APP_CONSUMER_KEY,
+        client_secret=APP_CONSUMER_SECRET,
+        resource_owner_key=oauth_token,
+        resource_owner_secret=oauth_token_secret,
+        verifier=oauth_verifier,
     )
 
-    if real_resp["status"] != "200":
+    access_token = oauth.fetch_access_token(access_token_url)
+
+    screen_name = access_token.get("screen_name")
+    user_id = access_token.get("user_id")
+
+    # These are the tokens you would store long term, someplace safe
+    real_oauth_token = access_token.get("oauth_token")
+    real_oauth_token_secret = access_token.get("oauth_token_secret")
+
+    # Call api.twitter.com/1.1/users/show.json?user_id={user_id}
+
+    oauth = OAuth1Session(
+        APP_CONSUMER_KEY,
+        client_secret=APP_CONSUMER_SECRET,
+        resource_owner_key=real_oauth_token,
+        resource_owner_secret=real_oauth_token_secret,
+    )
+    real_resp = oauth.get(show_user_url + "?user_id=" + user_id)
+
+    if real_resp.status_code != 200:
         error_message = (
             "Invalid response from Twitter API GET users/show: {status}".format(
-                status=real_resp["status"]
+                status=real_resp.status_code
             )
         )
         return templates.TemplateResponse(
             "error.html", {"request": request, "error_message": error_message}
         )
 
-    response = json.loads(real_content.decode("utf-8"))
+    response = json.loads(real_resp.content)
 
     friends_count = response["friends_count"]
     statuses_count = response["statuses_count"]
