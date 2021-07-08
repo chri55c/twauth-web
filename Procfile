@@ -1,1 +1,1 @@
-web: gunicorn twauth-web:app
+web: uvicorn twauth-web:app
